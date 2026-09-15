@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dewey-to-lc"
+version = "0.1.0"
+description = "Convert MARC records from Dewey Decimal (082) to Library of Congress Classification (050)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pymarc>=5.1.0",
+    "bookops-worldcat>=1.1.0",
+    "requests>=2.31.0",
+    "click>=8.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-mock>=3.12.0",
+    "responses>=0.25.0",
+]
+
+[project.scripts]
+dewey-to-lc = "dewey_to_lc.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
