@@ -12,6 +12,7 @@ _REPORT_COLUMNS = [
     "control_number",
     "title",
     "old_dewey",
+    "dewey_field",
     "new_lc_class",
     "new_lc_item",
     "new_lc_full",

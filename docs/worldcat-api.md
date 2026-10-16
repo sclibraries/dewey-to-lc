@@ -12,7 +12,7 @@ For each record in a FOLIO export, the tool:
 
 1. Pulls out the identifiers it can match on: OCLC number (035), LCCN (010) and ISBN (020).
 2. Asks WorldCat for that book's LC call number.
-3. Removes the 082 (Dewey) field and adds an 050 (LC) field with what WorldCat returned.
+3. Adds an 050 (LC) field with what WorldCat returned. The Dewey fields (082, 092, 099) are left in place.
 
 If WorldCat finds nothing, the tool tries the free loc.gov catalog next. Anything still unmatched is flagged in the CSV report for a cataloger to assign by hand in Classification Web.
 
@@ -26,7 +26,7 @@ The tool tries the most precise identifier first and stops at the first LC numbe
 4. **WorldCat came up empty?** Hand the record to the loc.gov lookup (separate, no credentials needed).
 5. **Nothing anywhere?** Mark the record `no_match` in the report for manual review.
 
-Records that have no 082, or already have an 050, are skipped and never sent to WorldCat.
+The tool finds the Dewey number in 082 $a, then 092 $a (blank indicators), then 099 $a if it looks like a Dewey number. A record whose 099 holds a non-Dewey local call number, with no 082 or 092, is looked up by its OCLC number only (steps 1 and 4 with no LCCN or ISBN). Records with no Dewey number and no 099, a non-Dewey 099 but no OCLC number, or an existing 050 are skipped and never sent to WorldCat.
 
 ## The three WorldCat calls
 
@@ -172,11 +172,11 @@ flowchart TD
     B --> C
     subgraph F["For each input .mrc file (convert_files)"]
         subgraph R["For each record in the file (convert_file)"]
-            C["Read identifiers (001, 010, 020, 035, 082)"] --> D{"Skip it?"}
-            D -- "yes: done before, no 082, has 050" --> S["Mark skipped"]
+            C["Read identifiers (001, 010, 020, 035, 082/092/099)"] --> D{"Skip it?"}
+            D -- "yes: done before, no Dewey or 099, has 050" --> S["Mark skipped"]
             D -- no --> L["Look up: WorldCat, then loc.gov"]
             L -- none --> N["Mark no_match"]
-            L -- found --> V["Swap 082 for 050, mark converted"]
+            L -- found --> V["Add 050, mark converted"]
         end
         R --> W["Write output .mrc (converted records only)"]
     end
@@ -201,7 +201,7 @@ Everything below runs after `dewey-to-lc convert records.mrc`. Indented steps ha
          1. `extract_identifiers(record)` returns a `RecordIdentifiers`.
          2. `_safe_control_number(ids, index)` uses the 001, or `record-000042` if there isn't one.
          3. `tracker.mark_pending(...)` adds a row to the database if it isn't there yet.
-         4. Skip checks, in order: `tracker.is_processed()` (only when resuming), then `has_dewey()`, then `has_lc_classification()`. Any hit calls `tracker.mark_skipped()` and moves to the next record.
+         4. Skip checks, in order: `tracker.is_processed()` (only when resuming), then `has_dewey()` (082, 092 or a Dewey-looking 099; a non-Dewey 099 with an OCLC number passes with only its OCLC number kept for the lookup), then `has_lc_classification()`. Any hit calls `tracker.mark_skipped()` and moves to the next record.
          5. `_cascade_lookup(ids, services)` calls `WorldCatLookup.lookup(ids)`. The first time, `_get_session()` signs in to OCLC; this is the run's first network call. Then come `_throttle()`, `_get_classification()`, `_extract_lc_from_classification()` and `_split_lc_call_number()`, plus `_oclc_from_search()` when it has to search by LCCN or ISBN. If WorldCat returns `None`, it calls `LocGovLookup.lookup(ids)`.
          6. No result: `tracker.mark_no_match()`.
          7. A result: `apply_lc_classification(record, ...)` edits the record in memory, the record joins a list of converted records, and `tracker.mark_converted(...)` saves the outcome.
@@ -247,7 +247,7 @@ Two smaller points:
 | --- | --- |
 | `cli.py` | Reads credentials from flags or `.env` and builds the list of lookup services: WorldCat first, loc.gov second |
 | `converter.py` | Loops over every MARC record, decides whether to look it up, and runs the services in order (`_cascade_lookup`) |
-| `marc_utils.py` | Pulls OCLC#, LCCN and ISBN out of a record; swaps 082 for 050 afterwards |
+| `marc_utils.py` | Pulls OCLC#, LCCN, ISBN and the Dewey number (082/092/099) out of a record; adds the 050 afterwards |
 | `lookup/base.py` | The shared interface every lookup service follows (`LookupService`) and its result object (`LookupResult`) |
 | `lookup/worldcat.py` | All the WorldCat-specific code: sign-in, the three API calls, response parsing |
 | `lookup/loc_gov.py` | The loc.gov fallback, used only when WorldCat returns nothing |
@@ -265,7 +265,9 @@ class RecordIdentifiers:
     lccn: str | None = None          # 010 $a
     isbn: list[str] = field(default_factory=list)  # every 020 $a
     oclc_number: str | None = None   # 035 $a
-    dewey: str | None = None         # 082 $a
+    dewey: str | None = None         # 082 $a, else 092 $a, else a Dewey-looking 099 $a
+    dewey_field: str | None = None   # which of those it came from
+    local_call_number: str | None = None  # 099 $a when it isn't Dewey
     title: str | None = None         # 245 $a + $b, for the report
     control_number: str | None = None  # 001
 ```
@@ -295,7 +297,7 @@ class LookupResult:
 
 **Building the list.** `_build_lookup_services()` in `cli.py` creates a `WorldCatLookup` only if both the client ID and secret are present (from `--worldcat-id` / `--worldcat-secret` or the `WORLDCAT_CLIENT_ID` / `WORLDCAT_CLIENT_SECRET` env vars). It always adds `LocGovLookup` after it. The order of this list is the fallback order.
 
-**Running the cascade.** For each record, `converter.py` first skips records with no 082 or an existing 050. It then calls `_cascade_lookup(ids, services)`, which asks each service in turn and returns the first non-`None` result:
+**Running the cascade.** For each record, `converter.py` first skips records with no Dewey number (unless they have a non-Dewey 099 and an OCLC number) or an existing 050. It then calls `_cascade_lookup(ids, services)`, which asks each service in turn and returns the first non-`None` result:
 
 ```python
 for service in services:
@@ -379,9 +381,10 @@ Two module-level functions turn raw responses into call numbers. They don't touc
 
 Once a `LookupResult` comes back, `converter.py` calls `apply_lc_classification(record, lc_class, lc_item)`. It edits the record in place:
 
-1. Deletes every 082 field.
-2. Deletes any existing 050 field, to avoid duplicates.
-3. Adds a new 050 with $a = class and, if present, $b = item, placed in tag order.
+1. Deletes any existing 050 field, to avoid duplicates.
+2. Adds a new 050 with $a = class and, if present, $b = item, placed in tag order.
+
+The 082, 092 and 099 fields are left exactly as they were.
 
 The new field's indicators are blank and `4`. In MARC, second indicator `4` means "assigned by an agency other than LC", which is accurate, since the number was borrowed from another library's record:
 

@@ -1,6 +1,18 @@
 # dewey-to-lc
 
-A Python CLI tool to batch-convert MARC records from Dewey Decimal Classification (field **082**) to Library of Congress Classification (field **050**), producing `.mrc` files ready for re-import into FOLIO.
+A Python CLI tool that adds a Library of Congress Classification (field **050**) to MARC records classed in Dewey Decimal, producing `.mrc` files ready for re-import into FOLIO.
+
+## Which records are converted
+
+The tool looks for a Dewey number in this order and uses the first one it finds:
+
+1. **082** $a (any indicators)
+2. **092** $a with both indicators blank (local Dewey)
+3. **099** $a, when it looks like a Dewey number (starts with three digits, e.g. `944.033 C671 Zcou`)
+
+If the 099 holds a non-Dewey local call number (e.g. `FOLIO C684t`) and there is no 082 or 092, the record is still looked up, but **only by its OCLC number** (035). Without an OCLC number it is skipped.
+
+Records that already have an 050 are skipped. The 082, 092 and 099 fields are **never removed**; the tool only adds the 050.
 
 ## How It Works
 
@@ -95,7 +107,8 @@ The report has one row per record:
 |--------|-------------|
 | `control_number` | MARC 001 control number |
 | `title` | Title from 245 field |
-| `old_dewey` | Original Dewey number (082 $a) |
+| `old_dewey` | Original Dewey number, or the local 099 call number when it isn't Dewey |
+| `dewey_field` | Where that number came from: `082`, `092`, `099` or `099 (not Dewey)` |
 | `new_lc_class` | LC classification number (050 $a) |
 | `new_lc_item` | LC item number (050 $b) |
 | `new_lc_full` | Full LC call number |
@@ -135,7 +148,7 @@ folio-marc-import \
 ### 3. Verify
 
 After import, spot-check 10–20 records in FOLIO Inventory to confirm:
-- Old Dewey call number is removed
+- Dewey fields (082/092/099) are still present
 - New LC call number is present and correctly formatted
 - No unintended field changes
 

@@ -30,6 +30,7 @@ class ProgressTracker:
                 control_number TEXT PRIMARY KEY,
                 title           TEXT,
                 old_dewey       TEXT,
+                dewey_field     TEXT,
                 new_lc_class    TEXT,
                 new_lc_item     TEXT,
                 lookup_source   TEXT,
@@ -42,6 +43,10 @@ class ProgressTracker:
                 value TEXT
             );
         """)
+        # Databases created before dewey_field existed need the column added.
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(records)")}
+        if "dewey_field" not in columns:
+            self._conn.execute("ALTER TABLE records ADD COLUMN dewey_field TEXT")
         self._conn.commit()
 
     def is_processed(self, control_number: str) -> bool:
@@ -51,12 +56,18 @@ class ProgressTracker:
         ).fetchone()
         return row is not None and row["status"] != RecordStatus.PENDING
 
-    def mark_pending(self, control_number: str, title: str | None, old_dewey: str | None) -> None:
+    def mark_pending(
+        self,
+        control_number: str,
+        title: str | None,
+        old_dewey: str | None,
+        dewey_field: str | None = None,
+    ) -> None:
         """Register a record as pending (idempotent — won't overwrite a completed record)."""
         self._conn.execute(
-            """INSERT OR IGNORE INTO records (control_number, title, old_dewey, status)
-               VALUES (?, ?, ?, 'pending')""",
-            (control_number, title, old_dewey),
+            """INSERT OR IGNORE INTO records (control_number, title, old_dewey, dewey_field, status)
+               VALUES (?, ?, ?, ?, 'pending')""",
+            (control_number, title, old_dewey, dewey_field),
         )
         self._conn.commit()
 
