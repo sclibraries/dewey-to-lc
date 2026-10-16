@@ -18,10 +18,34 @@ There is no direct Dewey→LC concordance API. This tool looks up the same title
 
 ## Installation
 
+The project needs **Python 3.10 or newer**. Check which Python you have:
+
 ```bash
-git clone <repo>
+python3 --version
+```
+
+If it reports 3.9 or older, install a newer Python first. Macs ship with Python 3.9 from Apple's Command Line Tools, and its old pip fails with `File "setup.py" or "setup.cfg" not found. Directory cannot be installed in editable mode`.
+
+1. Download and run the latest macOS installer from [python.org](https://www.python.org/downloads/macos/).
+2. Open a **new** Terminal window and run `python3 --version` again. It should now report 3.10 or newer.
+
+Then clone the repo and install it into a virtual environment:
+
+```bash
+git clone https://github.com/sclibraries/dewey-to-lc.git
 cd dewey-to-lc
-python3 -m pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+dewey-to-lc --help   # confirms the install worked
+```
+
+Each time you open a new terminal, activate the environment before running the tool:
+
+```bash
+cd dewey-to-lc
+source .venv/bin/activate
 ```
 
 ## Configuration
@@ -142,8 +166,9 @@ After import, spot-check 10–20 records in FOLIO Inventory to confirm:
 ## Development
 
 ```bash
-python3 -m pip install -e ".[dev]"
-python3 -m pytest
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+python -m pytest
 ```
 
 ## Project Structure
