@@ -2,7 +2,7 @@
 
 Oct 15, 2026 · Rob OConnell
 
-dewey-to-lc asks OCLC's WorldCat for the Library of Congress call number other libraries already assigned to the same book, then writes it into our MARC record in place of the Dewey number.
+dewey-to-lc asks OCLC's WorldCat for the Library of Congress call number other libraries already assigned to the same book, then adds it to our MARC record as an 050. The Dewey number stays where it is.
 
 ## The short version
 
@@ -18,7 +18,7 @@ If WorldCat finds nothing, the tool tries the free loc.gov catalog next. Anythin
 
 ## How one record gets looked up
 
-The tool tries the most precise identifier first and stops at the first LC number it finds. Every path ends with an OCLC number, because the LC lookups only accept one.
+The tool tries the most precise identifier first and stops at the first LC number it finds. Every WorldCat path ends with an OCLC number, because WorldCat's classification lookup only accepts one.
 
 1. **OCLC number on the record?** Ask WorldCat for the record's classification directly.
 2. **No luck, but there's an LCCN?** Search WorldCat by LCCN to find the matching OCLC number, then repeat step 1 with it.
@@ -26,11 +26,11 @@ The tool tries the most precise identifier first and stops at the first LC numbe
 4. **WorldCat came up empty?** Hand the record to the loc.gov lookup (separate, no credentials needed).
 5. **Nothing anywhere?** Mark the record `no_match` in the report for manual review.
 
-The tool finds the Dewey number in 082 $a, then 092 $a (blank indicators), then 099 $a if it looks like a Dewey number. A record whose 099 holds a non-Dewey local call number, with no 082 or 092, is looked up by its OCLC number only (steps 1 and 4 with no LCCN or ISBN). Records with no Dewey number and no 099, a non-Dewey 099 but no OCLC number, or an existing 050 are skipped and never sent to WorldCat.
+The tool finds the Dewey number in 082 $a, then 092 $a (blank indicators), then 099 $a if it looks like a Dewey number. A record whose 099 holds a non-Dewey local call number, with no 082 or 092, is looked up by its OCLC number only, so only step 1 applies (loc.gov needs an LCCN or ISBN, which aren't passed). Records with no Dewey number and no 099, a non-Dewey 099 but no OCLC number, or an existing 050 are skipped and never sent to WorldCat.
 
-## The three WorldCat calls
+## The WorldCat calls
 
-The tool uses three endpoints of OCLC's **WorldCat Metadata API**. It doesn't call them by hand: the open-source Python library [bookops-worldcat](https://github.com/BookOps-CAT/bookops-worldcat) wraps them.
+The tool uses two endpoints of OCLC's **WorldCat Metadata API** (a third, unused one is noted under "Things worth knowing"). It doesn't call them by hand: the open-source Python library [bookops-worldcat](https://github.com/BookOps-CAT/bookops-worldcat) wraps them.
 
 | Call | What it's for | What comes back | What the tool keeps |
 | --- | --- | --- | --- |
@@ -140,22 +140,21 @@ WorldCat needs an OCLC API key, called a **WSKey**, which comes as a client ID p
 
 ## Things worth knowing
 
-- **Speed limit:** the tool waits so it sends at most 1 WorldCat request per second by default (`WORLDCAT_RATE_LIMIT`, or `--rate-limit`). One record can take up to 3 calls per identifier tried, so large batches take a while.
-- **Interrupted runs resume:** progress is saved to a SQLite file, so a rerun skips records already done instead of calling WorldCat again.
+- **Speed limit:** the tool waits so it sends at most 1 WorldCat request per second by default (`WORLDCAT_RATE_LIMIT` in `.env`, or `--rate-limit`). One record can take up to 3 calls per identifier tried, so large batches take a while.
+- **Reruns skip finished records:** progress is saved to a SQLite file, so a rerun skips records already handled instead of calling WorldCat again. After an interruption, though, rerun with `--no-resume` (see "How a run ends").
 - **"Most popular" isn't checked:** the tool takes the most common LC number other libraries use. That is usually right but isn't verified by a person, so spot-checking is worthwhile.
 - **First search match wins:** an LCCN or ISBN search uses the first result only. An ISBN shared across editions could match a different edition.
 - **Call-number splitting is simple:** the class/item split happens at the first space, which suits typical numbers like `HM742 .H55 2010` but not every format.
 - **Errors don't stop the run:** a failed WorldCat call is logged and the tool moves to the next option.
-- **Naming mismatch:** the README calls this the "WorldCat Search API v2", but the code uses the **WorldCat Metadata API**. Use the Metadata API name when talking to OCLC.
-- **Unused code:** `worldcat.py` still has a fallback (`_get_marcxml_050`, `_extract_050_from_marcxml`) that requests the full record from `/manage/bibs`. Our key isn't allowed to read that endpoint (HTTP 401), so it never succeeds, and this doc leaves it out.
+- **Dead-end fallback:** after every classification miss, `_lookup_by_oclc` also requests the full record from `/manage/bibs` (`_get_marcxml_050`). Our key isn't allowed to read that endpoint (HTTP 401), so it always fails, quietly, and costs one extra call (at least a second) per miss. It can be removed; this doc leaves it out otherwise.
 - **Several LC numbers can come back:** the tool keeps only the first. For OCLC# 41266045 that is a children's-literature number (PZ7) over an English-literature one (PR).
 
 ## Try it yourself
 
-From the project folder, with `.env` filled in, run:
+From the project folder, with `.env` filled in and the virtual environment active, run:
 
 ```bash
-python3 check_credentials.py
+python check_credentials.py
 ```
 
 It signs in to WorldCat, asks for the classification of one known book (OCLC# 41266045) and prints the LC and Dewey numbers it gets back. It also checks that loc.gov is reachable. That one exchange is the whole WorldCat idea in miniature: send an OCLC number, get a call number back.
@@ -173,7 +172,7 @@ flowchart TD
     subgraph F["For each input .mrc file (convert_files)"]
         subgraph R["For each record in the file (convert_file)"]
             C["Read identifiers (001, 010, 020, 035, 082/092/099)"] --> D{"Skip it?"}
-            D -- "yes: done before, no Dewey or 099, has 050" --> S["Mark skipped"]
+            D -- "yes: done before, no Dewey (or non-Dewey 099 without OCLC#), has 050" --> S["Mark skipped"]
             D -- no --> L["Look up: WorldCat, then loc.gov"]
             L -- none --> N["Mark no_match"]
             L -- found --> V["Add 050, mark converted"]
@@ -201,7 +200,7 @@ Everything below runs after `dewey-to-lc convert records.mrc`. Indented steps ha
          1. `extract_identifiers(record)` returns a `RecordIdentifiers`.
          2. `_safe_control_number(ids, index)` uses the 001, or `record-000042` if there isn't one.
          3. `tracker.mark_pending(...)` adds a row to the database if it isn't there yet.
-         4. Skip checks, in order: `tracker.is_processed()` (only when resuming), then `has_dewey()` (082, 092 or a Dewey-looking 099; a non-Dewey 099 with an OCLC number passes with only its OCLC number kept for the lookup), then `has_lc_classification()`. Any hit calls `tracker.mark_skipped()` and moves to the next record.
+         4. Skip checks, in order: `tracker.is_processed()` (only when resuming), then `has_dewey()` (082, 092 or a Dewey-looking 099; a non-Dewey 099 with an OCLC number passes with only its OCLC number kept for the lookup), then `has_lc_classification()`. A record already in the database is just counted as skipped; a hit on either of the other two checks calls `tracker.mark_skipped()`. Either way it moves to the next record.
          5. `_cascade_lookup(ids, services)` calls `WorldCatLookup.lookup(ids)`. The first time, `_get_session()` signs in to OCLC; this is the run's first network call. Then come `_throttle()`, `_get_classification()`, `_extract_lc_from_classification()` and `_split_lc_call_number()`, plus `_oclc_from_search()` when it has to search by LCCN or ISBN. If WorldCat returns `None`, it calls `LocGovLookup.lookup(ids)`.
          6. No result: `tracker.mark_no_match()`.
          7. A result: `apply_lc_classification(record, ...)` edits the record in memory, the record joins a list of converted records, and `tracker.mark_converted(...)` saves the outcome.
@@ -238,7 +237,7 @@ Until that's fixed, rerun an interrupted file with `--no-resume`. That repeats e
 
 Two smaller points:
 
-- Records marked `no_match` or `error` count as done, so a resume won't retry them.
+- Records marked `no_match`, `error` or `skipped` count as done, so a resume won't retry them. Records are matched by 001 only, so this applies even if the record has since been corrected or comes from a different file. Use `--no-resume` or delete `progress.db` to process them again.
 - `resume` ignores custom `--db` and `--output-dir` paths. If the first run used custom paths, use `convert` with the same flags instead.
 
 ### File map
@@ -249,7 +248,7 @@ Two smaller points:
 | `converter.py` | Loops over every MARC record, decides whether to look it up, and runs the services in order (`_cascade_lookup`) |
 | `marc_utils.py` | Pulls OCLC#, LCCN, ISBN and the Dewey number (082/092/099) out of a record; adds the 050 afterwards |
 | `lookup/base.py` | The shared interface every lookup service follows (`LookupService`) and its result object (`LookupResult`) |
-| `lookup/worldcat.py` | All the WorldCat-specific code: sign-in, the three API calls, response parsing |
+| `lookup/worldcat.py` | All the WorldCat-specific code: sign-in, the API calls, response parsing |
 | `lookup/loc_gov.py` | The loc.gov fallback, used only when WorldCat returns nothing |
 | `progress.py` | SQLite tracker that records each record's outcome so reruns skip finished ones |
 | `check_credentials.py` (repo root) | Standalone script that proves the WorldCat key works |
@@ -277,6 +276,7 @@ The cleanup rules matter, because they decide what gets sent to WorldCat:
 - **OCLC number:** checks each 035 $a for `(OCoLC)`, `OCoLC`, `ocn` or `ocm` followed by digits, keeps just the digits, and stops at the first match. So `(OCoLC)ocm41266045` becomes `41266045`.
 - **ISBN:** cuts at the first space or `(` and removes hyphens. So `978-0-13-444432-1 (pbk.)` becomes `9780134444321`. All ISBNs are kept, in record order.
 - **LCCN:** the first 010 $a, trimmed but otherwise sent as-is.
+- **Dewey number:** 082 $a, else 092 $a with both indicators blank, else 099 $a if it starts with three digits (`944.033 C671 Zcou`, `813/.54`). A 099 that doesn't look like Dewey (`FOLIO C684t`) is kept as `local_call_number` instead. The Dewey number is only used to decide whether to look the record up and for the report; it is never sent to WorldCat.
 
 ### Step 2: wiring it up (`cli.py`, `lookup/base.py`, `converter.py`)
 
@@ -323,7 +323,7 @@ This is the heart of the integration. Its methods split into three layers: setup
 | `_throttle()` | Setup | Sleeps if the last call was too recent. Called at the start of every API method. |
 | `_get_classification(session, oclc)` | API call | `session.bib_get_classification(oclcNumber=...)`; on HTTP 200, returns the first "most popular" LC number as a string. |
 | `_oclc_from_search(session, query)` | API call | `session.brief_bibs_search(q=...)`; on 200, returns the OCLC number of the first `briefRecords` hit. |
-| `_lookup_by_oclc(session, oclc)` | Logic | Calls `_get_classification` and wraps a hit in a `LookupResult`. |
+| `_lookup_by_oclc(session, oclc)` | Logic | Calls `_get_classification` and wraps a hit in a `LookupResult`. On a miss it also makes the dead-end `/manage/bibs` call. |
 | `lookup(identifiers)` | Logic | The public entry point: OCLC# first, then LCCN search, then each ISBN search. |
 | `close()` | Setup | Closes the HTTP session. |
 
@@ -353,9 +353,9 @@ def lookup(self, identifiers):
     return None
 ```
 
-**Error handling.** Each of the three API methods catches every exception, logs a warning, and returns `None`. A non-200 response also returns `None`. So a timeout, a 404 or a 401 all look the same to the caller: "no answer, try the next thing." If signing in fails, `lookup()` logs an error and returns `None` for that record.
+**Error handling.** Each API method catches every exception, logs a warning, and returns `None`. A non-200 response also returns `None`. So a timeout, a 404 or a 401 all look the same to the caller: "no answer, try the next thing." If signing in fails, `lookup()` logs an error and returns `None` for that record.
 
-**Worst case per record:** one OCLC# attempt (2 calls), one LCCN attempt (3 calls), and 3 calls per ISBN. A record with 3 ISBNs and no hits makes 14 calls, about 14 seconds at the default rate.
+**Worst case per record:** one OCLC# attempt (2 calls: classification plus the dead-end fallback), one LCCN attempt (3 calls), and 3 calls per ISBN. A record with 3 ISBNs and no hits makes 14 calls, about 14 seconds at the default rate.
 
 ### Step 4: parsing WorldCat's responses (helpers in `lookup/worldcat.py`)
 
@@ -396,7 +396,7 @@ The converter then records the outcome in the SQLite progress database, includin
 
 ### Tests (`tests/test_worldcat_lookup.py`)
 
-The 20 WorldCat tests never touch the real API, so they run in under a second with no credentials. All 20 passed on Oct 15, 2026 (`python3 -m pytest tests/test_worldcat_lookup.py`).
+The 20 WorldCat tests never touch the real API, so they run in under a second with no credentials. All 20 passed on Oct 15, 2026 (`python -m pytest tests/test_worldcat_lookup.py`).
 
 **How the API is faked.** Each `lookup()` test patches the two bookops classes with `unittest.mock`, then tells the fake session what to return:
 
