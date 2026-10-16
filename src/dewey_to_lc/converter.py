@@ -57,6 +57,9 @@ def _cascade_lookup(
     return None
 
 
+_LOCAL_099_LABEL = "099 (not Dewey)"
+
+
 def _safe_control_number(identifiers: RecordIdentifiers, index: int) -> str:
     """Return a stable identifier for a record, falling back to its index."""
     return identifiers.control_number or f"record-{index:06d}"
@@ -100,8 +103,16 @@ class Converter:
             ids = extract_identifiers(record)
             control_num = _safe_control_number(ids, index)
 
-            # Register as pending (idempotent)
-            self._tracker.mark_pending(control_num, ids.title, ids.dewey)
+            # Register as pending (idempotent). Records with a non-Dewey 099
+            # are listed with that call number so they can be reviewed.
+            if ids.dewey:
+                self._tracker.mark_pending(control_num, ids.title, ids.dewey, ids.dewey_field)
+            elif ids.local_call_number:
+                self._tracker.mark_pending(
+                    control_num, ids.title, ids.local_call_number, _LOCAL_099_LABEL
+                )
+            else:
+                self._tracker.mark_pending(control_num, ids.title, None)
 
             # Resume: skip already-processed records
             if self._resume and self._tracker.is_processed(control_num):
@@ -109,12 +120,20 @@ class Converter:
                 stats.skipped += 1
                 continue
 
-            # Skip records that have no Dewey classification
+            # Records with no Dewey number are only looked up when they have a
+            # non-Dewey 099 and an OCLC number, and then only by OCLC number.
+            lookup_ids = ids
             if not has_dewey(record):
-                logger.debug("No Dewey field on record %s — skipping", control_num)
-                self._tracker.mark_skipped(control_num)
-                stats.skipped += 1
-                continue
+                if not (ids.local_call_number and ids.oclc_number):
+                    logger.debug("No Dewey field on record %s — skipping", control_num)
+                    self._tracker.mark_skipped(control_num)
+                    stats.skipped += 1
+                    continue
+                lookup_ids = RecordIdentifiers(
+                    oclc_number=ids.oclc_number,
+                    title=ids.title,
+                    control_number=ids.control_number,
+                )
 
             # Skip records that already have an LC classification
             if has_lc_classification(record):
@@ -125,7 +144,7 @@ class Converter:
 
             # Look up LC classification
             try:
-                result = _cascade_lookup(ids, self._services)
+                result = _cascade_lookup(lookup_ids, self._services)
             except Exception as exc:
                 logger.error("Cascade lookup failed for %s: %s", control_num, exc)
                 self._tracker.mark_error(control_num, str(exc))
@@ -149,7 +168,7 @@ class Converter:
                 logger.info(
                     "Converted %s: %s → %s (via %s)",
                     control_num,
-                    ids.dewey,
+                    ids.dewey or ids.local_call_number,
                     result.full_call_number,
                     result.source,
                 )

@@ -146,6 +146,68 @@ class TestConverter:
         assert stats2.skipped == 1
         assert stats2.converted == 0
 
+    def test_converts_record_with_092_dewey(self, tmp_path: Path):
+        input_path = tmp_path / "input.mrc"
+        record = _make_record("CTL001", dewey=None)
+        record.add_field(Field(tag="092", indicators=[" ", " "], subfields=[Subfield("a", "944.033")]))
+        _write_mrc([record], input_path)
+
+        result = LookupResult(lc_class="DC130", source="mock")
+        converter, tracker = self._make_converter(tmp_path, result)
+        stats = converter.convert_file(input_path)
+
+        assert stats.converted == 1
+        row = tracker.get_all_records()[0]
+        assert row["old_dewey"] == "944.033"
+        assert row["dewey_field"] == "092"
+
+    def test_non_dewey_099_with_oclc_is_looked_up_by_oclc_only(self, tmp_path: Path):
+        input_path = tmp_path / "input.mrc"
+        record = _make_record("CTL001", dewey=None, oclc="11538750")
+        record.add_field(Field(tag="010", indicators=[" ", " "], subfields=[Subfield("a", "29018845")]))
+        record.add_field(Field(tag="099", indicators=[" ", " "], subfields=[Subfield("a", "FIC SMITH")]))
+        _write_mrc([record], input_path)
+
+        svc = MagicMock(spec=LookupService)
+        svc.name = "mock"
+        svc.lookup.return_value = LookupResult(lc_class="DC130", source="mock")
+        tracker = ProgressTracker(tmp_path / "progress.db")
+        converter = Converter(lookup_services=[svc], tracker=tracker, output_dir=tmp_path / "output")
+        stats = converter.convert_file(input_path)
+
+        assert stats.converted == 1
+        ids = svc.lookup.call_args.args[0]
+        assert ids.oclc_number == "11538750"
+        assert ids.lccn is None
+        assert ids.isbn == []
+        row = tracker.get_all_records()[0]
+        assert row["old_dewey"] == "FIC SMITH"
+        assert row["dewey_field"] == "099 (not Dewey)"
+
+    def test_non_dewey_099_without_oclc_is_skipped(self, tmp_path: Path):
+        input_path = tmp_path / "input.mrc"
+        record = _make_record("CTL001", dewey=None)
+        record.add_field(Field(tag="099", indicators=[" ", " "], subfields=[Subfield("a", "FIC SMITH")]))
+        _write_mrc([record], input_path)
+
+        converter, tracker = self._make_converter(tmp_path, LookupResult(lc_class="DC130", source="mock"))
+        stats = converter.convert_file(input_path)
+
+        assert stats.skipped == 1
+        assert stats.converted == 0
+
+    def test_converted_output_keeps_082(self, tmp_path: Path):
+        input_path = tmp_path / "input.mrc"
+        _write_mrc([_make_record("CTL001", dewey="005.133")], input_path)
+
+        converter, tracker = self._make_converter(tmp_path, LookupResult(lc_class="QA76.73.P98", source="mock"))
+        converter.convert_file(input_path)
+
+        from dewey_to_lc.marc_utils import read_marc_file
+        out = list(read_marc_file(tmp_path / "output" / "input.mrc"))[0]
+        assert out["082"]["a"] == "005.133"
+        assert out["050"]["a"] == "QA76.73.P98"
+
     def test_output_mrc_file_is_written(self, tmp_path: Path):
         input_path = tmp_path / "input.mrc"
         _write_mrc([_make_record("CTL001", dewey="005.133")], input_path)

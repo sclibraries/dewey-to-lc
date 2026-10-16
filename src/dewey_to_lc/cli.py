@@ -57,7 +57,7 @@ def _build_lookup_services(worldcat_id: str | None, worldcat_secret: str | None,
 @click.group()
 @click.version_option(version="0.1.0", prog_name="dewey-to-lc")
 def cli() -> None:
-    """Convert MARC records from Dewey Decimal (082) to LC Classification (050)."""
+    """Add LC Classification (050) to MARC records classed in Dewey (082/092/099)."""
 
 
 @cli.command("convert")
@@ -97,10 +97,11 @@ def cli() -> None:
 )
 @click.option(
     "--rate-limit",
+    envvar="WORLDCAT_RATE_LIMIT",
     default=1.0,
     show_default=True,
     type=float,
-    help="WorldCat API requests per second.",
+    help="WorldCat API requests per second (or set WORLDCAT_RATE_LIMIT env var).",
 )
 @click.option(
     "--no-resume",
