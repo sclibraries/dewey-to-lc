@@ -70,6 +70,8 @@ cd dewey-to-lc
 source .venv/bin/activate
 ```
 
+If something goes wrong, see [Troubleshooting](#troubleshooting).
+
 ## Configuration
 
 In the project folder, copy `.env.example` to `.env` and fill in your credentials. `.env` is git-ignored; never commit it.
@@ -219,6 +221,100 @@ After import, spot-check 10–20 records in FOLIO Inventory to confirm:
 - The Instance's Classification list shows the new LC number
 - The MARC record has the new 050 and still has its 082/092/099 fields
 - No unintended field changes
+
+## Troubleshooting
+
+Common problems, roughly in the order you'd meet them.
+
+### Installing
+
+**`ERROR: File "setup.py" or "setup.cfg" not found. Directory cannot be installed in editable mode`**
+
+Your Python is too old (usually the Python 3.9 that comes with a Mac). Install Python 3.10 or newer and build the virtual environment with it, as in [Installation](#installation).
+
+**`Defaulting to user installation because normal site-packages is not writeable`**
+
+pip is installing into the system Python instead of the virtual environment. Activate the environment first (`source .venv/bin/activate`), then rerun the install.
+
+**`python --version` still says 3.9 after installing a new Python**
+
+The `.venv` folder was built with the old Python, or plain `python3` still points at it. Rebuild it with the version-numbered command:
+
+```bash
+deactivate 2>/dev/null
+rm -rf .venv
+python3.14 -m venv .venv      # use the version you installed
+source .venv/bin/activate
+python --version
+python -m pip install -e .
+```
+
+**`ls /usr/local/bin/ | grep -E '^python3\.[0-9]+$'` lists nothing**
+
+The python.org installer didn't finish. Run it again.
+
+**`command not found: dewey-to-lc`**
+
+The virtual environment isn't active in this terminal window. Run `cd dewey-to-lc` and `source .venv/bin/activate`. If it still isn't found, the install didn't complete; rerun `python -m pip install -e .`.
+
+### Credentials
+
+**`⚠  WorldCat credentials not provided — falling back to loc.gov only.`**
+
+The tool can't find `.env`, or it's missing `WORLDCAT_CLIENT_ID` / `WORLDCAT_CLIENT_SECRET`. Make sure the file is named exactly `.env` (not `.env.txt` or `env`) and sits in the `dewey-to-lc` folder. Without it, most records end up `no_match`.
+
+**`Failed to create WorldCat session: ... "invalid clientId"`** (or any 401)
+
+The client ID or secret is wrong, or the key lacks the `WorldCatMetadataAPI` scope. The run keeps going but every record falls back to loc.gov, so watch for this line. Check the values in `.env` and run `python check_credentials.py`.
+
+### Input files
+
+**`Error: Invalid value for 'INPUT_FILES...': Path 'records.mrc' does not exist.`**
+
+The path is relative to the folder you're in. Give the full path (e.g. `~/Downloads/records.mrc`) or `cd` to the file's folder.
+
+**`AttributeError: 'NoneType' object has no attribute 'get_fields'`**
+
+The file isn't binary MARC. A MarcEdit `.mrk` text file causes this even when renamed to `.mrc`. Export from FOLIO Data Export, or convert the `.mrk` with MarcEdit's MarcMaker.
+
+### Results
+
+**A record with a Dewey number shows `skipped`**
+
+Most often an earlier run already handled that 001, and `progress.db` remembers it. Rerun with `--no-resume`, or delete `progress.db`. Otherwise the record:
+- already has an 050,
+- has its Dewey number only in a 092 whose indicators aren't both blank, or
+- has a non-Dewey 099 and no OCLC number (035).
+
+**Lots of `no_match`**
+
+Check the run's first lines for the credentials warnings above. Records with no OCLC number, LCCN or ISBN can't be looked up at all.
+
+**The LC number looks wrong for the book**
+
+WorldCat returns the number most libraries use for the whole work, which can come from a different edition, a reprint or a microform set. Check older and rare books, and rows where `dewey_field` is `099 (not Dewey)`, before importing.
+
+**Can't find the output files**
+
+They're written relative to the folder you ran the command from: `./output/`, `./conversion_report.csv` and `./progress.db`. Run `ls output` there.
+
+**The output `.mrc` is missing records the report says were converted**
+
+The run was interrupted, then resumed. Rerun the file with `--no-resume`.
+
+**The report lists records from an older batch**
+
+The report covers everything in `progress.db`. Delete `progress.db` and `conversion_report.csv` before a new batch, or use new `--db` and `--report` paths.
+
+**Runs are slow**
+
+That's the rate limit: one WorldCat request per second by default, and a record can take several requests. It is set by `WORLDCAT_RATE_LIMIT` in `.env` or `--rate-limit`; stay within what OCLC allows for your key.
+
+### After importing into FOLIO
+
+**FOLIO still shows the Dewey call number**
+
+The tool updates the bib record, so the LC number appears in the Instance's Classification list. Holdings and item call numbers (852/952) are not changed; that's a separate holdings update.
 
 ## Development
 
