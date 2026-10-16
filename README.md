@@ -27,18 +27,26 @@ python3 --version
 If it reports 3.9 or older, install a newer Python first. Macs ship with Python 3.9 from Apple's Command Line Tools, and its old pip fails with `File "setup.py" or "setup.cfg" not found. Directory cannot be installed in editable mode`.
 
 1. Download and run the latest macOS installer from [python.org](https://www.python.org/downloads/macos/).
-2. Open a **new** Terminal window and run `python3 --version` again. It should now report 3.10 or newer.
+2. Find the version-numbered command it installed (plain `python3` may still point at Apple's 3.9):
 
-Then clone the repo and install it into a virtual environment:
+   ```bash
+   ls /usr/local/bin/python3.*
+   ```
+
+   Use the name it lists, such as `python3.14`, in the `venv` step below.
+
+Then clone the repo and install it into a virtual environment, replacing `python3.14` with your version:
 
 ```bash
 git clone https://github.com/sclibraries/dewey-to-lc.git
 cd dewey-to-lc
-python3 -m venv .venv
+rm -rf .venv                  # remove any environment made with the old Python
+python3.14 -m venv .venv
 source .venv/bin/activate
+python --version              # must report 3.10 or newer
 python -m pip install --upgrade pip
 python -m pip install -e .
-dewey-to-lc --help   # confirms the install worked
+dewey-to-lc --help            # confirms the install worked
 ```
 
 Each time you open a new terminal, activate the environment before running the tool:
