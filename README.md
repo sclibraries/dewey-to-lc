@@ -18,7 +18,7 @@ Records that already have an 050 are skipped. The 082, 092 and 099 fields are **
 
 There is no direct Dewey→LC concordance API. This tool looks up the same title in external library databases that already carry both classifications:
 
-1. **OCLC WorldCat Metadata API** *(primary)* — finds the record by OCLC# (or searches by LCCN, then ISBN, to get an OCLC#) and takes the most popular LC call number libraries use for that work
+1. **OCLC WorldCat Metadata API** *(primary)* — finds the record by OCLC# (or searches by LCCN, then ISBN, to get an OCLC#) and takes the LC call number on that WorldCat record; only if the record has none does it take the most popular LC number libraries use for that work (which can come from another edition or format)
 2. **loc.gov public API** *(fallback)* — searches the Library of Congress catalog by LCCN or ISBN
 3. **Manual review queue** — records with no match are flagged in the CSV report for manual assignment via [Classification Web](https://classweb.org/)
 

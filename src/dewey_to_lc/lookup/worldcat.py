@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
-from xml.etree import ElementTree as ET
 
 from bookops_worldcat import WorldcatAccessToken, MetadataSession
 
@@ -13,8 +13,26 @@ from dewey_to_lc.marc_utils import RecordIdentifiers
 
 logger = logging.getLogger(__name__)
 
-# MARCXML namespace
-_NS = {"marc": "http://www.loc.gov/MARC21/slim"}
+# Start of a second call number within a string: a 2-3 letter class
+# ("PR6068") or a class with an attached cutter ("E185.97.K5"). A cutter on
+# its own ("C6", "H365") is a single letter, so it doesn't match.
+_NEXT_CALL_NUMBER = re.compile(r"\s+(?=[A-Z]{2,3}\d|[A-Z]\d+(?:\.\d+)?\.[A-Z]\d)")
+
+def _extract_lc_from_bib(data: dict) -> str | None:
+    """Extract the record's own LC call number from a full bib response.
+
+    Response shape: {"classification": {"lc": "PN4270 .O73 1817", ...}, ...}
+
+    A record with more than one LC number gets them joined with spaces
+    ("PZ7.R79835 Har 1999 PR6068.O93 H365 1999"); only the first is kept.
+    """
+    try:
+        lc = data.get("classification", {}).get("lc")
+        if lc and lc.strip():
+            return _NEXT_CALL_NUMBER.split(lc.strip(), maxsplit=1)[0]
+    except AttributeError:
+        pass
+    return None
 
 
 def _extract_lc_from_classification(data: dict) -> str | None:
@@ -41,32 +59,17 @@ def _split_lc_call_number(call_number: str) -> tuple[str, str | None]:
     return parts[0], parts[1] if len(parts) > 1 else None
 
 
-def _extract_050_from_marcxml(xml_text: str) -> tuple[str, str | None] | None:
-    """Parse MARCXML and extract the first 050 $a and $b subfields."""
-    try:
-        root = ET.fromstring(xml_text)
-        records = root.findall(".//marc:record", _NS) or [root]
-        for rec in records:
-            for field in rec.findall("marc:datafield[@tag='050']", _NS):
-                lc_a = field.find("marc:subfield[@code='a']", _NS)
-                lc_b = field.find("marc:subfield[@code='b']", _NS)
-                if lc_a is not None and lc_a.text:
-                    return lc_a.text.strip(), (lc_b.text.strip() if lc_b is not None else None)
-    except ET.ParseError as exc:
-        logger.warning("Failed to parse MARCXML response: %s", exc)
-    return None
-
-
 class WorldCatLookup(LookupService):
     """Looks up LC classification via the OCLC WorldCat Metadata API.
 
     Strategy (per record):
-    1. If OCLC# is available: call /search/classification-bibs/{oclcNumber}
-       which returns LC classification recommendations directly (JSON).
-    2. If no OCLC# (or classification endpoint returns nothing): search
-       brief-bibs by LCCN or ISBN to get an OCLC#, then retry step 1.
-    3. Fallback: fetch full MARCXML via /manage/bibs/{oclcNumber} and
-       parse the 050 field directly.
+    1. If OCLC# is available: call /search/bibs/{oclcNumber} and use the
+       record's own LC call number.
+    2. If that record has none: call /search/classification-bibs/{oclcNumber}
+       for the most popular LC number across the work cluster. This can come
+       from another edition or format (e.g. a microform of a print book).
+    3. If no OCLC# (or steps 1-2 return nothing): search brief-bibs by LCCN
+       or ISBN to get an OCLC#, then retry steps 1-2.
     """
 
     def __init__(
@@ -112,15 +115,15 @@ class WorldCatLookup(LookupService):
             logger.warning("WorldCat classification lookup failed for OCLC# %s: %s", oclc_number, exc)
         return None
 
-    def _get_marcxml_050(self, session: MetadataSession, oclc_number: str) -> tuple[str, str | None] | None:
-        """Fetch full MARCXML and extract 050 as a fallback."""
+    def _get_record_lc(self, session: MetadataSession, oclc_number: str) -> str | None:
+        """Call /search/bibs/{oclcNumber} and return the record's own LC call number."""
         self._throttle()
         try:
-            response = session.bib_get(oclcNumber=oclc_number, responseFormat="application/marcxml+xml")
+            response = session.bib_search(oclcNumber=oclc_number)
             if response.status_code == 200:
-                return _extract_050_from_marcxml(response.text)
+                return _extract_lc_from_bib(response.json())
         except Exception as exc:
-            logger.warning("WorldCat MARCXML fetch failed for OCLC# %s: %s", oclc_number, exc)
+            logger.warning("WorldCat bib lookup failed for OCLC# %s: %s", oclc_number, exc)
         return None
 
     def _oclc_from_search(self, session: MetadataSession, query: str) -> str | None:
@@ -137,17 +140,13 @@ class WorldCatLookup(LookupService):
         return None
 
     def _lookup_by_oclc(self, session: MetadataSession, oclc_number: str) -> LookupResult | None:
-        """Try classification endpoint first, fall back to full MARCXML 050."""
-        lc_full = self._get_classification(session, oclc_number)
+        """Try the record's own LC number first, fall back to the most popular."""
+        lc_full = self._get_record_lc(session, oclc_number)
+        if not lc_full:
+            lc_full = self._get_classification(session, oclc_number)
         if lc_full:
             lc_class, lc_item = _split_lc_call_number(lc_full)
             return LookupResult(lc_class=lc_class, lc_item=lc_item, source=self.name)
-
-        # Fallback: parse 050 from full MARCXML
-        parsed = self._get_marcxml_050(session, oclc_number)
-        if parsed:
-            return LookupResult(lc_class=parsed[0], lc_item=parsed[1], source=self.name)
-
         return None
 
     def lookup(self, identifiers: RecordIdentifiers) -> LookupResult | None:
