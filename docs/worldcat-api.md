@@ -18,9 +18,9 @@ If WorldCat finds nothing, the tool tries the free loc.gov catalog next. Anythin
 
 ## How one record gets looked up
 
-The tool tries the most precise identifier first and stops at the first LC number it finds. Every WorldCat path ends with an OCLC number, because WorldCat's classification lookup only accepts one.
+The tool tries the most precise identifier first and stops at the first LC number it finds. Every WorldCat path ends with an OCLC number, because both WorldCat lookups only accept one.
 
-1. **OCLC number on the record?** Ask WorldCat for the record's classification directly.
+1. **OCLC number on the record?** Ask WorldCat for that record's own LC call number. If the record has none, ask for the most popular LC number across all editions and formats of the work instead.
 2. **No luck, but there's an LCCN?** Search WorldCat by LCCN to find the matching OCLC number, then repeat step 1 with it.
 3. **Still nothing, but there are ISBNs?** Search by each ISBN in turn the same way.
 4. **WorldCat came up empty?** Hand the record to the loc.gov lookup (separate, no credentials needed).
@@ -30,11 +30,12 @@ The tool finds the Dewey number in 082 $a, then 092 $a (blank indicators), then 
 
 ## The WorldCat calls
 
-The tool uses two endpoints of OCLC's **WorldCat Metadata API** (a third, unused one is noted under "Things worth knowing"). It doesn't call them by hand: the open-source Python library [bookops-worldcat](https://github.com/BookOps-CAT/bookops-worldcat) wraps them.
+The tool uses three endpoints of OCLC's **WorldCat Metadata API**. It doesn't call them by hand: the open-source Python library [bookops-worldcat](https://github.com/BookOps-CAT/bookops-worldcat) wraps them.
 
 | Call | What it's for | What comes back | What the tool keeps |
 | --- | --- | --- | --- |
-| `GET /search/classification-bibs/{oclcNumber}` | Main lookup: "what call numbers do libraries use for this book?" | JSON with the most popular LC and Dewey numbers, e.g. `{"lc": {"mostPopular": ["HM742 .H55 2010"]}}` | The first LC number, split at the first space into 050 $a (`HM742`) and $b (`.H55 2010`) |
+| `GET /search/bibs/{oclcNumber}` | Main lookup: "what LC number is on this WorldCat record?" | The full record as JSON, including `{"classification": {"lc": "PN4270 .O73 1817"}}` | The LC number, split at the first space into 050 $a (`PN4270`) and $b (`.O73 1817`) |
+| `GET /search/classification-bibs/{oclcNumber}` | Fallback when the record has no LC number: "what call numbers do libraries use for this work?" | JSON with the most popular LC and Dewey numbers, e.g. `{"lc": {"mostPopular": ["HM742 .H55 2010"]}}` | The first LC number, split at the first space into 050 $a (`HM742`) and $b (`.H55 2010`) |
 | `GET /search/brief-bibs?q=...` | Finding an OCLC number when the record lacks one | A list of short matching records | The OCLC number of the first match |
 
 Searches use WorldCat index prefixes: `ln:` for LCCN and `bn:` for ISBN, e.g. `bn:9780134444321`.
@@ -47,9 +48,27 @@ The examples below are real responses, captured on Oct 15, 2026 with our WSKey. 
 - **Base URL:** every call goes to `https://metadata.api.oclc.org/worldcat/...`. bookops-worldcat builds the URLs.
 - **Test records:** OCLC# 41266045 (the record `check_credentials.py` uses) and ISBN 9780134444321 (*Starting Out with Python*).
 
+### Full record: `GET /search/bibs/{oclcNumber}`
+
+Used by `_get_record_lc()`. It returns the whole WorldCat record as JSON (title, contributors, subjects, format and more). The tool reads only `classification.lc`, the LC call number on that record.
+
+Real response for OCLC# 16398602 (*Orations for the use of schools*, 1817), trimmed to the fields that matter here:
+
+```json
+{
+  "classification": { "dewey": "371.34 Or1 1817", "lc": "PN4270 .O73 1817" },
+  "format": { "generalFormat": "Book", "specificFormat": "PrintBook" },
+  "identifier": { "oclcNumber": "16398602" }
+}
+```
+
+**A record with two LC numbers gets them joined with spaces.** OCLC# 41266045 returns `"lc": "PZ7.R79835 Har 1999 PR6068.O93 H365 1999"`. `_extract_lc_from_bib()` cuts the string where a second call number starts (a 2–3 letter class such as `PR6068`, or a class with an attached cutter such as `E185.97.K5`) and keeps the first, `PZ7.R79835 Har 1999`. A missing or blank `lc` means the record has no LC number, and the tool falls back to the classification endpoint below.
+
+**Why the record's own number comes first.** The classification endpoint can answer from a *different* record in the same work. For OCLC# 16398602 (print) it returns `AC1 .E22 Microprint`, which is the 050 of OCLC# 15573797, a microform of the same title. The print record's own number, `PN4270 .O73 1817`, is the right one for a print copy.
+
 ### Classification: `GET /search/classification-bibs/{oclcNumber}`
 
-Used by `_get_classification()`. It returns a small JSON object holding the most popular LC and Dewey numbers. Per OCLC, they come from the record with the most library holdings in the book's "work cluster" (all editions and copies of the same work).
+Used by `_get_classification()`, only when the record itself has no LC number. It returns a small JSON object holding the most popular LC and Dewey numbers. Per OCLC, they come from the record with the most library holdings in the book's "work cluster" (all editions and copies of the same work).
 
 Real response for OCLC# 41266045:
 
@@ -76,7 +95,7 @@ When WorldCat has nothing (tried with a made-up OCLC#), it still returns HTTP 20
 { "dewey": { "mostPopular": [] }, "lc": { "mostPopular": [] } }
 ```
 
-**What the code does with it:** takes `lc.mostPopular[0]` and drops the rest. In the example above that's `PZ7.R79835 Har 1999`, a children's-literature number. The second option, `PR6068.O93 H365 1999` (English literature), is silently discarded, and an academic library might prefer it. An empty list means WorldCat has no LC number for that OCLC#.
+**What the code does with it:** when the record itself has no LC number, takes `lc.mostPopular[0]` and drops the rest. In the example above that's `PZ7.R79835 Har 1999`, a children's-literature number. The second option, `PR6068.O93 H365 1999` (English literature), is silently discarded, and an academic library might prefer it. An empty list means WorldCat has no LC number for that OCLC#.
 
 ### Search: `GET /search/brief-bibs?q=...`
 
@@ -140,14 +159,14 @@ WorldCat needs an OCLC API key, called a **WSKey**, which comes as a client ID p
 
 ## Things worth knowing
 
-- **Speed limit:** the tool waits so it sends at most 1 WorldCat request per second by default (`WORLDCAT_RATE_LIMIT` in `.env`, or `--rate-limit`). One record can take up to 3 calls per identifier tried, so large batches take a while.
+- **Speed limit:** the tool waits so it sends at most 1 WorldCat request per second by default (`WORLDCAT_RATE_LIMIT` in `.env`, or `--rate-limit`). One record can take up to 3 calls per identifier tried, so large batches take a while. A record whose WorldCat record has its own LC number needs just 1 call.
 - **Reruns skip finished records:** progress is saved to a SQLite file, so a rerun skips records already handled instead of calling WorldCat again. After an interruption, though, rerun with `--no-resume` (see "How a run ends").
-- **"Most popular" isn't checked:** the tool takes the most common LC number other libraries use. That is usually right but isn't verified by a person, so spot-checking is worthwhile.
+- **Borrowed numbers aren't checked:** the LC number comes from a WorldCat record, or, when that record has none, from the most popular number across the work. Neither is verified by a person, so spot-checking is worthwhile. The "most popular" fallback can come from another format, such as a microform of a print book.
+- **Full MARC isn't available to us:** `/manage/bibs/{oclcNumber}` (full MARC record) returns HTTP 401 "Unable to perform bib read" for our key, even though the token carries the `view_marc_bib` scope. The tool doesn't use it; `/search/bibs` gives the LC number without it.
 - **First search match wins:** an LCCN or ISBN search uses the first result only. An ISBN shared across editions could match a different edition.
 - **Call-number splitting is simple:** the class/item split happens at the first space, which suits typical numbers like `HM742 .H55 2010` but not every format.
 - **Errors don't stop the run:** a failed WorldCat call is logged and the tool moves to the next option.
-- **Dead-end fallback:** after every classification miss, `_lookup_by_oclc` also requests the full record from `/manage/bibs` (`_get_marcxml_050`). Our key isn't allowed to read that endpoint (HTTP 401), so it always fails, quietly, and costs one extra call (at least a second) per miss. It can be removed; this doc leaves it out otherwise.
-- **Several LC numbers can come back:** the tool keeps only the first. For OCLC# 41266045 that is a children's-literature number (PZ7) over an English-literature one (PR).
+- **Several LC numbers can come back:** from either endpoint, the tool keeps only the first. For OCLC# 41266045 that is a children's-literature number (PZ7) over an English-literature one (PR).
 
 ## Try it yourself
 
@@ -201,7 +220,7 @@ Everything below runs after `dewey-to-lc convert records.mrc`. Indented steps ha
          2. `_safe_control_number(ids, index)` uses the 001, or `record-000042` if there isn't one.
          3. `tracker.mark_pending(...)` adds a row to the database if it isn't there yet.
          4. Skip checks, in order: `tracker.is_processed()` (only when resuming), then `has_dewey()` (082, 092 or a Dewey-looking 099; a non-Dewey 099 with an OCLC number passes with only its OCLC number kept for the lookup), then `has_lc_classification()`. A record already in the database is just counted as skipped; a hit on either of the other two checks calls `tracker.mark_skipped()`. Either way it moves to the next record.
-         5. `_cascade_lookup(ids, services)` calls `WorldCatLookup.lookup(ids)`. The first time, `_get_session()` signs in to OCLC; this is the run's first network call. Then come `_throttle()`, `_get_classification()`, `_extract_lc_from_classification()` and `_split_lc_call_number()`, plus `_oclc_from_search()` when it has to search by LCCN or ISBN. If WorldCat returns `None`, it calls `LocGovLookup.lookup(ids)`.
+         5. `_cascade_lookup(ids, services)` calls `WorldCatLookup.lookup(ids)`. The first time, `_get_session()` signs in to OCLC; this is the run's first network call. Then come `_throttle()`, `_get_record_lc()` and `_extract_lc_from_bib()` (plus `_get_classification()` and `_extract_lc_from_classification()` if the record has no LC number), then `_split_lc_call_number()`, plus `_oclc_from_search()` when it has to search by LCCN or ISBN. If WorldCat returns `None`, it calls `LocGovLookup.lookup(ids)`.
          6. No result: `tracker.mark_no_match()`.
          7. A result: `apply_lc_classification(record, ...)` edits the record in memory, the record joins a list of converted records, and `tracker.mark_converted(...)` saves the outcome.
       3. After the file's last record: `write_marc_file(converted, output_dir/<same filename>)`, only if at least one record converted.
@@ -321,9 +340,10 @@ This is the heart of the integration. Its methods split into three layers: setup
 | `__init__(client_id, client_secret, rate_limit=1.0)` | Setup | Stores credentials and turns the rate limit into a minimum gap between calls (`1 / rate_limit` seconds). Does **not** connect yet. |
 | `_get_session()` | Setup | On first use, creates a `WorldcatAccessToken` (scope `WorldCatMetadataAPI`) and a `MetadataSession`, then caches the session for the rest of the run. |
 | `_throttle()` | Setup | Sleeps if the last call was too recent. Called at the start of every API method. |
+| `_get_record_lc(session, oclc)` | API call | `session.bib_search(oclcNumber=...)`; on HTTP 200, returns the record's own LC number as a string (the first, if it has several). |
 | `_get_classification(session, oclc)` | API call | `session.bib_get_classification(oclcNumber=...)`; on HTTP 200, returns the first "most popular" LC number as a string. |
 | `_oclc_from_search(session, query)` | API call | `session.brief_bibs_search(q=...)`; on 200, returns the OCLC number of the first `briefRecords` hit. |
-| `_lookup_by_oclc(session, oclc)` | Logic | Calls `_get_classification` and wraps a hit in a `LookupResult`. On a miss it also makes the dead-end `/manage/bibs` call. |
+| `_lookup_by_oclc(session, oclc)` | Logic | Calls `_get_record_lc`, then `_get_classification` if that found nothing, and wraps a hit in a `LookupResult`. |
 | `lookup(identifiers)` | Logic | The public entry point: OCLC# first, then LCCN search, then each ISBN search. |
 | `close()` | Setup | Closes the HTTP session. |
 
@@ -355,11 +375,13 @@ def lookup(self, identifiers):
 
 **Error handling.** Each API method catches every exception, logs a warning, and returns `None`. A non-200 response also returns `None`. So a timeout, a 404 or a 401 all look the same to the caller: "no answer, try the next thing." If signing in fails, `lookup()` logs an error and returns `None` for that record.
 
-**Worst case per record:** one OCLC# attempt (2 calls: classification plus the dead-end fallback), one LCCN attempt (3 calls), and 3 calls per ISBN. A record with 3 ISBNs and no hits makes 14 calls, about 14 seconds at the default rate.
+**Worst case per record:** one OCLC# attempt (2 calls: the record, then classification), one LCCN attempt (3 calls: search, record, classification), and 3 calls per ISBN. A record with 3 ISBNs and no hits makes 14 calls, about 14 seconds at the default rate.
 
 ### Step 4: parsing WorldCat's responses (helpers in `lookup/worldcat.py`)
 
-Two module-level functions turn raw responses into call numbers. They don't touch the network, which makes them easy to test.
+Three module-level functions turn raw responses into call numbers. They don't touch the network, which makes them easy to test.
+
+**`_extract_lc_from_bib(data)`** reads `data["classification"]["lc"]` from the full-record response and returns it, cut at the start of any second call number, or `None` if it's missing or blank. See "Full record" above for the response and the two-number case.
 
 **`_extract_lc_from_classification(data)`** reads the JSON from the classification endpoint (example below: OCLC's published sample, also used as a test fixture; see "What WorldCat sends back" for a live one) and returns the first item of `data["lc"]["mostPopular"]`, or `None`:
 
@@ -396,30 +418,30 @@ The converter then records the outcome in the SQLite progress database, includin
 
 ### Tests (`tests/test_worldcat_lookup.py`)
 
-The 20 WorldCat tests never touch the real API, so they run in under a second with no credentials. All 20 passed on Oct 15, 2026 (`python -m pytest tests/test_worldcat_lookup.py`).
+The 27 WorldCat tests never touch the real API, so they run in under a second with no credentials. All 27 passed on Oct 26, 2026 (`python -m pytest tests/test_worldcat_lookup.py`).
 
 **How the API is faked.** Each `lookup()` test patches the two bookops classes with `unittest.mock`, then tells the fake session what to return:
 
 ```python
 @patch("dewey_to_lc.lookup.worldcat.WorldcatAccessToken")
 @patch("dewey_to_lc.lookup.worldcat.MetadataSession")
-def test_uses_classification_endpoint_for_oclc(self, MockSession, MockToken):
+def test_uses_record_own_lc_for_oclc(self, MockSession, MockToken):
     session = MockSession.return_value
-    session.bib_get_classification.return_value = _mock_response(200, _CLASSIFICATION_RESPONSE)
+    session.bib_search.return_value = _mock_response(200, _BIB_RESPONSE)
 
-    result = self._make_lookup().lookup(RecordIdentifiers(oclc_number="12345678"))
+    result = self._make_lookup().lookup(RecordIdentifiers(oclc_number="16398602"))
 
-    assert result.lc_class == "HM742"
-    assert result.lc_item == ".H55 2010"
-    session.bib_get.assert_not_called()   # fallback wasn't needed
+    assert result.lc_class == "PN4270"
+    assert result.lc_item == ".O73 1817"
+    session.bib_get_classification.assert_not_called()   # fallback wasn't needed
 ```
 
 **What's covered:**
 
 | Area | Behaviors checked |
 | --- | --- |
-| Parsing helpers | Most-popular LC extracted; missing, empty dict and empty list return `None`; call-number split with and without $b |
-| Lookup order | Classification endpoint used for OCLC#; LCCN search when no OCLC#; ISBN search when no OCLC# or LCCN; OCLC# takes priority |
+| Parsing helpers | Record LC extracted, first of several kept, single numbers kept whole, missing or blank returns `None`; most-popular LC extracted, missing, empty dict and empty list return `None`; call-number split with and without $b |
+| Lookup order | Record's own LC used for OCLC#; most popular used when the record has none or the record call fails; LCCN search when no OCLC#; ISBN search when no OCLC# or LCCN; OCLC# takes priority |
 | Failure cases | No identifiers returns `None`; every call failing returns `None` |
 
 Not covered: real network behavior such as token expiry, HTTP 429 rate limiting, or WorldCat's actual response shapes changing. `check_credentials.py` is the only live check.
